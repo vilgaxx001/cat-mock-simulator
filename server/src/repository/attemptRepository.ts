@@ -13,7 +13,12 @@ import { Attempt } from "../types";
 // code. If you later add multi-user auth, this is the file to replace.
 // ============================================================================
 
-const DATA_DIR = path.join(__dirname, "..", "..", "data-store");
+// Resolves to `server/data-store` in both dev (__dirname = server/src/repository)
+// and production (__dirname = server/dist/repository), since both sit two levels
+// below server/. DATA_DIR can override this to point at a mounted persistent
+// disk in hosted environments (e.g. a Render disk at /var/data), where the
+// default application directory is ephemeral and wiped on every redeploy.
+const DATA_DIR = process.env.DATA_DIR ?? path.join(__dirname, "..", "..", "data-store");
 const ATTEMPTS_DIR = path.join(DATA_DIR, "attempts");
 const INDEX_FILE = path.join(DATA_DIR, "attempt-index.json");
 

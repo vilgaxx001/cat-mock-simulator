@@ -9,8 +9,22 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: CORS_ORIGIN
-        sync: false # set this to your deployed frontend's origin after the first deploy
-    # NOTE: Render's filesystem is ephemeral on the free plan — data-store/
-    # (attempt history) will reset on every redeploy or restart unless you
-    # attach a persistent disk (Render dashboard → Disks), which requires a
-    # paid plan. See the README's Deployment section for details.
+        # Set this to your deployed Vercel frontend origin (no trailing slash)
+        # after the frontend's first deploy, e.g.
+        # https://cat-mock-simulator.vercel.app
+        sync: false
+
+      # Where attempt history is written. Render's application filesystem is
+      # ephemeral — without a persistent disk, completed-mock history resets on
+      # every redeploy or restart. The `disk:` block below fixes that, but
+      # persistent disks require a paid Render plan. On the free plan, either
+      # leave both this and `disk:` commented out (accepting that history is
+      # temporary) or upgrade and enable them together.
+      # - key: DATA_DIR
+      #   value: /var/data
+
+    # Uncomment together with DATA_DIR above (requires a paid Render plan):
+    # disk:
+    #   name: cat-mock-data
+    #   mountPath: /var/data
+    #   sizeGB: 1
