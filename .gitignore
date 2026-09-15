@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+
+# Personal exam attempts — don't want your own attempt history accidentally committed
+server/data-store/attempts/*.json

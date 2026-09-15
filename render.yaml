@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: cat-mock-simulator-api
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: CORS_ORIGIN
+        sync: false # set this to your deployed frontend's origin after the first deploy
+    # NOTE: Render's filesystem is ephemeral on the free plan — data-store/
+    # (attempt history) will reset on every redeploy or restart unless you
+    # attach a persistent disk (Render dashboard → Disks), which requires a
+    # paid plan. See the README's Deployment section for details.
