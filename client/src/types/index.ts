@@ -44,6 +44,7 @@ export interface ResponseSummary {
 
 export interface AttemptView {
   attempt_id: string;
+  mock_id: string;
   status: AttemptStatus;
   current_section: SectionName | null;
   completed_sections: SectionName[];

@@ -19,6 +19,7 @@ interface ResultDashboardProps {
   mockName: string;
   completedAt: string;
   onViewHistory: () => void;
+  onBackToDashboard: () => void;
 }
 
 const OUTCOME_STYLES: Record<QuestionReviewItem["outcome"], string> = {
@@ -49,7 +50,7 @@ function optionLetter(idx: number): string {
   return String.fromCharCode(65 + idx);
 }
 
-export function ResultDashboard({ result, mockName, completedAt, onViewHistory }: ResultDashboardProps) {
+export function ResultDashboard({ result, mockName, completedAt, onViewHistory, onBackToDashboard }: ResultDashboardProps) {
   const [filter, setFilter] = useState<"all" | QuestionReviewItem["outcome"]>("all");
   const [downloading, setDownloading] = useState(false);
   const { score, question_review, groups, analytics } = result;
@@ -75,25 +76,30 @@ export function ResultDashboard({ result, mockName, completedAt, onViewHistory }
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
-      {/* Top actions */}
+      {/* Top actions — the result screen is a hub, not a dead end: Review Result
+          (scrolls to the question-by-question breakdown below), Mock History and
+          Back to Dashboard are always available from here. */}
       <div className="mb-6 flex flex-wrap items-center justify-end gap-2">
-        <button
-          onClick={() => reviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
-          className="rounded-md border border-line px-3 py-1.5 text-sm text-ink transition-colors hover:bg-canvas"
-        >
-          Review Questions
-        </button>
-        <button
-          onClick={handleDownload}
-          disabled={downloading}
-          className="flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-sm text-ink transition-colors hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {downloading && <Spinner size={12} />}
-          {downloading ? "Preparing PDF…" : "Download Result"}
-        </button>
-        <button onClick={onViewHistory} className="rounded-md border border-line px-3 py-1.5 text-sm text-ink transition-colors hover:bg-canvas">
-          Mock History
-        </button>
+          <button
+            onClick={() => reviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+            className="rounded-md border border-line px-3 py-1.5 text-sm text-ink transition-colors hover:bg-canvas"
+          >
+            Review Result
+          </button>
+          <button
+            onClick={handleDownload}
+            disabled={downloading}
+            className="flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-sm text-ink transition-colors hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {downloading && <Spinner size={12} />}
+            {downloading ? "Preparing PDF…" : "Download Result"}
+          </button>
+          <button onClick={onViewHistory} className="rounded-md border border-line px-3 py-1.5 text-sm text-ink transition-colors hover:bg-canvas">
+            Mock History
+          </button>
+          <button onClick={onBackToDashboard} className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-dark">
+            Back to Dashboard
+          </button>
       </div>
 
       {/* Instant hero */}

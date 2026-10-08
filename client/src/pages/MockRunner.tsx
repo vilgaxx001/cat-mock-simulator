@@ -1,24 +1,18 @@
-import { useCallback, useEffect, useRef, useState, Suspense, lazy } from "react";
-import { api, ApiError } from "./api/client";
-import { AttemptView, MockDetail, MockSummary, ResultPayload, SectionConfig, SectionName } from "./types";
-import { LandingScreen } from "./components/LandingScreen";
-import { InstructionsScreen } from "./components/InstructionsScreen";
-import { ExamHeader } from "./components/ExamHeader";
-import { QuestionPalette } from "./components/QuestionPalette";
-import { QuestionView } from "./components/QuestionView";
-import { SetStimulus } from "./components/SetStimulus";
-import { Controls } from "./components/Controls";
-import { ResultDashboard } from "./components/ResultDashboard";
-import { SectionTransitionScreen } from "./components/SectionTransitionScreen";
-import { ErrorState } from "./components/ErrorState";
-import { LoadingState } from "./components/LoadingState";
-
-// Lazy-loaded: history pulls in recharts and a handful of history-only
-// components that most sessions (still mid-exam, or just viewing a result)
-// never touch — no reason to ship that code until the button is clicked.
-const MockHistoryScreen = lazy(() => import("./components/history/MockHistoryScreen").then((m) => ({ default: m.MockHistoryScreen })));
-
-type Screen = "landing" | "instructions" | "exam" | "result" | "history";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { BlockerFunction, useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
+import { api, ApiError } from "../api/client";
+import { AttemptView, MockDetail, ResultPayload, SectionConfig, SectionName } from "../types";
+import { InstructionsScreen } from "../components/InstructionsScreen";
+import { ExamHeader } from "../components/ExamHeader";
+import { QuestionPalette } from "../components/QuestionPalette";
+import { QuestionView } from "../components/QuestionView";
+import { SetStimulus } from "../components/SetStimulus";
+import { Controls } from "../components/Controls";
+import { ResultDashboard } from "../components/ResultDashboard";
+import { SectionTransitionScreen } from "../components/SectionTransitionScreen";
+import { ErrorState } from "../components/ErrorState";
+import { LoadingState } from "../components/LoadingState";
+import { LeaveExamModal } from "../components/LeaveExamModal";
 
 const POLL_INTERVAL_MS = 10_000;
 
@@ -36,9 +30,28 @@ function computeGlobalOffset(sections: SectionConfig[], currentSection: SectionN
   return offset;
 }
 
-export default function App() {
-  const [screen, setScreen] = useState<Screen>("landing");
-  const [mocks, setMocks] = useState<MockSummary[]>([]);
+/**
+ * The mock-taking controller — Instructions, live Exam, and Result all live here
+ * because they share one continuous piece of state (the attempt) and the original
+ * App.tsx already managed them as one state machine. What changed for routing is
+ * only *what drives* the active mode: instead of an internal `useState<Screen>`,
+ * the URL is the source of truth —
+ *
+ *   /mock/:mockId            -> instructions (pre-attempt)
+ *   /attempt/:attemptId      -> live exam (or the section-transition interstitial)
+ *   /attempt/:attemptId/result -> result dashboard
+ *
+ * which is what makes direct URLs, refresh, and browser back/forward all work
+ * correctly without a second routing system layered on top.
+ */
+export function MockRunner() {
+  const params = useParams<{ mockId?: string; attemptId?: string }>();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const isResultRoute = location.pathname.endsWith("/result");
+  const routeMockId = params.mockId ?? null;
+  const routeAttemptId = params.attemptId ?? null;
+
   const [mockDetail, setMockDetail] = useState<MockDetail | null>(null);
   const [attemptId, setAttemptId] = useState<string | null>(null);
   const [attemptView, setAttemptView] = useState<AttemptView | null>(null);
@@ -46,9 +59,10 @@ export default function App() {
   const [draftAnswer, setDraftAnswer] = useState("");
   const [syncedAtMs, setSyncedAtMs] = useState(Date.now());
   const [result, setResult] = useState<ResultPayload | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
 
   // Section-transition interstitial state. `pendingView` holds the freshly-fetched
   // state for the new section — deliberately NOT applied to `attemptView` until the
@@ -64,31 +78,13 @@ export default function App() {
   // render cycle — used to detect a genuine section change coming back from the
   // server (as opposed to a routine refresh of the same section's state).
   const currentSectionRef = useRef<SectionName | null>(null);
-
-  // ---- Load mock list on first paint ----
-  useEffect(() => {
-    setLoading(true);
-    api
-      .listMocks()
-      .then((r) => setMocks(r.mocks))
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
-  }, []);
-
-  const handleSelectMock = useCallback((mockId: string) => {
-    setError(null);
-    api
-      .getMockDetail(mockId)
-      .then((detail) => {
-        setMockDetail(detail);
-        setScreen("instructions");
-      })
-      .catch((e) => setError(e.message));
-  }, []);
+  // Which attempt id the exam state below currently reflects — guards against the
+  // route-driven load effect re-fetching an attempt we just applied locally (e.g.
+  // immediately after creating it in handleStart).
+  const loadedAttemptIdRef = useRef<string | null>(null);
 
   const questions = attemptView?.questions ?? [];
   const currentQuestion = questions[currentIndex];
-
   const responseMap = Object.fromEntries((attemptView?.responses ?? []).map((r) => [r.question_id, r]));
 
   /** Merges a partial view (from an action endpoint, which omits `questions`) onto the existing full view. */
@@ -97,36 +93,29 @@ export default function App() {
     setSyncedAtMs(Date.now());
   }, []);
 
-  const handleAutoSubmitted = useCallback(() => {
-    const id = attemptIdRef.current;
-    if (!id) return;
-    api
-      .getResult(id)
-      .then((r) => {
-        setResult(r);
-        setScreen("result");
-      })
-      .catch((e) => setError(e.message));
-  }, []);
-
   /** Applies a fully-fetched attempt view (with questions/groups for whatever section
-   * it belongs to) as the new "current" state: resets to question 1 and visits it.
-   * Used both for the very first section on exam start, and after a transition is
-   * confirmed via the interstitial. */
+   * it belongs to) as the new "current" state: resets to question 1 and visits it. */
   const applyFreshView = useCallback(
     (view: AttemptView) => {
       setAttemptView(view);
       setSyncedAtMs(Date.now());
       setCurrentIndex(0);
       currentSectionRef.current = view.current_section;
+      loadedAttemptIdRef.current = view.attempt_id;
       const firstId = view.questions?.[0]?.question_id;
-      const id = attemptIdRef.current;
+      const id = attemptIdRef.current ?? view.attempt_id;
       if (firstId && id) {
         api.visitQuestion(id, firstId).then(mergeView).catch(() => {});
       }
     },
     [mergeView]
   );
+
+  const handleAutoSubmitted = useCallback(() => {
+    const id = attemptIdRef.current;
+    if (!id) return;
+    navigate(`/attempt/${id}/result`, { replace: true });
+  }, [navigate]);
 
   /** Central decision point for "what changed" whenever we get an authoritative
    * fresh read of the attempt: submitted -> results; a different section than what's
@@ -155,6 +144,82 @@ export default function App() {
     api.getAttempt(id).then(processFreshView).catch(() => {});
   }, [processFreshView]);
 
+  // ---- Route-driven loading ----
+  // /mock/:mockId -> fetch the mock's instructions
+  useEffect(() => {
+    if (!routeMockId) return;
+    setLoading(true);
+    setError(null);
+    setNotFound(false);
+    api
+      .getMockDetail(routeMockId)
+      .then((detail) => setMockDetail(detail))
+      .catch((e) => {
+        if (e instanceof ApiError && e.status === 404) setNotFound(true);
+        else setError(e.message);
+      })
+      .finally(() => setLoading(false));
+  }, [routeMockId]);
+
+  // /attempt/:attemptId (live exam) and /attempt/:attemptId/result -> resolve the
+  // attempt (and, for the exam, its mock) directly from the URL. This is what makes
+  // a page refresh or a pasted link work, not just in-app navigation.
+  useEffect(() => {
+    if (!routeAttemptId) return;
+
+    if (isResultRoute) {
+      setLoading(true);
+      setError(null);
+      setNotFound(false);
+      api
+        .getResult(routeAttemptId)
+        .then((r) => {
+          setResult(r);
+          setAttemptId(routeAttemptId);
+        })
+        .catch((e) => {
+          if (e instanceof ApiError && e.status === 404) setNotFound(true);
+          else if (e instanceof ApiError && e.status === 409) {
+            // Not submitted yet (e.g. a stale/edited URL) — the live exam is the
+            // correct place for this attempt, not an error screen.
+            navigate(`/attempt/${routeAttemptId}`, { replace: true });
+          } else setError(e.message);
+        })
+        .finally(() => setLoading(false));
+      return;
+    }
+
+    // Already have this exact attempt loaded locally (e.g. we just created it in
+    // handleStart and navigated here ourselves) — no need to refetch.
+    if (loadedAttemptIdRef.current === routeAttemptId && attemptIdRef.current === routeAttemptId) {
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setNotFound(false);
+    setAttemptId(routeAttemptId);
+    api
+      .getAttempt(routeAttemptId)
+      .then((view) => {
+        if (view.status === "submitted") {
+          navigate(`/attempt/${routeAttemptId}/result`, { replace: true });
+          return;
+        }
+        return api.getMockDetail(view.mock_id).then((detail) => {
+          setMockDetail(detail);
+          applyFreshView(view);
+        });
+      })
+      .catch((e) => {
+        if (e instanceof ApiError && e.status === 404) setNotFound(true);
+        else setError(e.message);
+      })
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeAttemptId, isResultRoute]);
+
   const handleStart = useCallback(() => {
     if (!mockDetail) return;
     setStarting(true);
@@ -168,12 +233,12 @@ export default function App() {
         return api.beginAttempt(attempt_id).then(() => api.getAttempt(attempt_id));
       })
       .then((full) => {
-        setScreen("exam");
         applyFreshView(full);
+        navigate(`/attempt/${newAttemptId}`);
       })
       .catch((e) => setError(e.message))
       .finally(() => setStarting(false));
-  }, [mockDetail, applyFreshView]);
+  }, [mockDetail, applyFreshView, navigate]);
 
   const confirmTransition = useCallback(() => {
     if (!pendingView) return;
@@ -237,14 +302,41 @@ export default function App() {
     [attemptId, currentQuestion, draftAnswer, currentIndex, questions.length, mergeView, navigateTo, handleBoundaryError]
   );
 
+  const isLiveExam = !routeMockId && !isResultRoute && !!attemptView && attemptView.status === "in_progress" && !transitionTo;
+
   // Poll periodically so an idle candidate (no clicks) still gets caught by
   // server-side expiry detection — whether that means the timer warning kicking in,
   // a section transition, or final auto-submission.
   useEffect(() => {
-    if (screen !== "exam" || !attemptId) return;
+    if (!isLiveExam || !attemptId) return;
     const id = window.setInterval(fetchAndProcess, POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [screen, attemptId, fetchAndProcess]);
+  }, [isLiveExam, attemptId, fetchAndProcess]);
+
+  // ---- Active-exam navigation protection ----
+  // Blocks both in-app navigation (the header's exit control below, which just calls
+  // navigate("/")) and the browser's own back/forward, showing the same "Leave this
+  // mock?" confirmation either way, since both are "leaving the live exam".
+  const shouldBlock: BlockerFunction = useCallback(
+    ({ currentLocation, nextLocation }) => isLiveExam && currentLocation.pathname !== nextLocation.pathname,
+    [isLiveExam]
+  );
+  const blocker = useBlocker(shouldBlock);
+
+  if (loading && !mockDetail && !attemptView && !result) {
+    return <LoadingState />;
+  }
+
+  if (notFound) {
+    return (
+      <ErrorState
+        title="We couldn't find that"
+        message="This mock or attempt doesn't exist — it may have been removed, or the link is incorrect."
+        primaryLabel="Back to Dashboard"
+        onPrimary={() => navigate("/")}
+      />
+    );
+  }
 
   if (error) {
     return (
@@ -252,55 +344,47 @@ export default function App() {
         message={error}
         primaryLabel="Try Again"
         onPrimary={() => setError(null)}
-        secondaryLabel="Back to Mocks"
+        secondaryLabel="Back to Dashboard"
         onSecondary={() => {
           setError(null);
-          setScreen("landing");
+          navigate("/");
         }}
       />
     );
   }
 
-  if (screen === "landing") {
-    return <LandingScreen mocks={mocks} onSelect={handleSelectMock} onViewHistory={() => setScreen("history")} loading={loading} />;
+  if (routeMockId && mockDetail) {
+    return <InstructionsScreen detail={mockDetail} onStart={handleStart} starting={starting} backTo="/" />;
   }
 
-  if (screen === "instructions" && mockDetail) {
-    return <InstructionsScreen detail={mockDetail} onStart={handleStart} starting={starting} />;
-  }
-
-  if (screen === "result" && result && mockDetail) {
+  if (isResultRoute && result) {
     return (
       <ResultDashboard
         result={result}
-        mockName={mockDetail.mock.name}
+        mockName={result.mock_name}
         completedAt={result.submitted_at ?? new Date().toISOString()}
-        onViewHistory={() => setScreen("history")}
+        onViewHistory={() => navigate("/history")}
+        onBackToDashboard={() => navigate("/")}
       />
     );
   }
 
-  if (screen === "history") {
+  if (transitionTo && mockDetail) {
     return (
-      <Suspense fallback={<LoadingState label="Loading history…" />}>
-        <MockHistoryScreen onBack={() => setScreen("landing")} />
-      </Suspense>
+      <>
+        <SectionTransitionScreen
+          fromSection={transitionTo.from}
+          toSection={transitionTo.to}
+          sections={mockDetail.config.sections}
+          onContinue={confirmTransition}
+          continuing={confirmingTransition}
+        />
+        {blocker.state === "blocked" && <LeaveExamModal onContinue={() => blocker.reset?.()} onLeave={() => blocker.proceed?.()} />}
+      </>
     );
   }
 
-  if (screen === "exam" && transitionTo && mockDetail) {
-    return (
-      <SectionTransitionScreen
-        fromSection={transitionTo.from}
-        toSection={transitionTo.to}
-        sections={mockDetail.config.sections}
-        onContinue={confirmTransition}
-        continuing={confirmingTransition}
-      />
-    );
-  }
-
-  if (screen === "exam" && attemptView && currentQuestion && mockDetail) {
+  if (attemptView && currentQuestion && mockDetail) {
     const groups = attemptView.groups ?? [];
     const groupKey = currentQuestion.set_id ?? currentQuestion.passage_id ?? null;
     const currentGroup = groupKey ? groups.find((g) => g.group_id === groupKey) : undefined;
@@ -321,6 +405,7 @@ export default function App() {
           serverSeconds={attemptView.time_remaining_sec}
           syncedAtMs={syncedAtMs}
           warningThresholdSec={mockDetail.config.warning_threshold_sec}
+          onExit={() => navigate("/")}
         />
 
         {attemptView.in_warning_window && (
@@ -365,6 +450,8 @@ export default function App() {
             />
           </div>
         </div>
+
+        {blocker.state === "blocked" && <LeaveExamModal onContinue={() => blocker.reset?.()} onLeave={() => blocker.proceed?.()} />}
       </div>
     );
   }

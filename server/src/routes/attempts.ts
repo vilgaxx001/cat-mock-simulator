@@ -37,6 +37,10 @@ function buildAttemptView(attempt: Attempt, config: ExamConfig, sectionQuestionI
 
   return {
     attempt_id: attempt.attempt_id,
+    // Lets the client resolve which mock (and therefore which config/sections/
+    // instructions) an attempt belongs to after a full page reload or a direct
+    // visit to /attempt/:id, when there is no in-memory mock selection to lean on.
+    mock_id: attempt.mock_id,
     status: attempt.status,
     current_section: currentSection,
     completed_sections: attempt.completed_sections,

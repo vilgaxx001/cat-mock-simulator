@@ -1,19 +1,23 @@
 import { useState } from "react";
 import { MockDetail } from "../types";
 import { Spinner } from "./LoadingState";
+import { BackLink } from "./BackLink";
 
 interface InstructionsScreenProps {
   detail: MockDetail;
   onStart: () => void;
   starting: boolean;
+  /** Where the "Back to Mock Library" affordance above the card should lead. */
+  backTo?: string;
 }
 
-export function InstructionsScreen({ detail, onStart, starting }: InstructionsScreenProps) {
+export function InstructionsScreen({ detail, onStart, starting, backTo }: InstructionsScreenProps) {
   const { mock, config, instructions } = detail;
   const [agreed, setAgreed] = useState(false);
 
   return (
     <div className="mx-auto flex min-h-screen max-w-3xl flex-col justify-center px-4 py-12 sm:px-6">
+      {backTo && <BackLink to={backTo} label="Back to Mock Library" />}
       <div className="rounded-lg border border-line bg-panel p-6 shadow-panel sm:p-8">
         <div className="mb-6 border-b border-line pb-6">
           <p className="mb-1 font-mono text-xs uppercase tracking-wide text-muted">Examination Instructions</p>
